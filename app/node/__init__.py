@@ -89,18 +89,86 @@ class NodeManager:
             return nodes
 
     async def _update_users(self, users: list):
+        synced_count = 0
+        failed_nodes = []
+        skipped_nodes = []
+        
         async with self._lock.reader_lock:
-            for node in self._nodes.values():
-                await node.update_users(users)
+            total_nodes = len(self._nodes)
+            
+            for node_id, node in self._nodes.items():
+                try:
+                    # Check node health before syncing
+                    health = await node.get_health()
+                    if health != Health.HEALTHY:
+                        skipped_nodes.append((node_id, health.name))
+                        self.logger.debug(
+                            f"[Node {node_id}] Skipping bulk user sync - health status: {health.name}"
+                        )
+                        continue
+                    
+                    await node.update_users(users)
+                    synced_count += 1
+                    
+                except Exception as e:
+                    failed_nodes.append((node_id, str(e)))
+                    self.logger.error(
+                        f"[Node {node_id}] Failed to sync {len(users)} users: {e}"
+                    )
+        
+        # Log summary
+        if failed_nodes or skipped_nodes:
+            self.logger.warning(
+                f"Bulk user sync incomplete - Synced {len(users)} users to {synced_count}/{total_nodes} nodes. "
+                f"Skipped: {len(skipped_nodes)} (unhealthy), Failed: {len(failed_nodes)} (errors)"
+            )
+            if failed_nodes:
+                self.logger.error(f"Failed nodes: {failed_nodes}")
+        else:
+            self.logger.info(f"Successfully synced {len(users)} users to all {synced_count} nodes")
 
     async def update_users(self, users: list[User]):
         proto_users = await serialize_users_for_node(users)
         asyncio.create_task(self._update_users(proto_users))
 
     async def _update_user(self, user):
+        synced_count = 0
+        failed_nodes = []
+        skipped_nodes = []
+        
         async with self._lock.reader_lock:
-            for node in self._nodes.values():
-                await node.update_user(user)
+            total_nodes = len(self._nodes)
+            
+            for node_id, node in self._nodes.items():
+                try:
+                    # Check node health before syncing
+                    health = await node.get_health()
+                    if health != Health.HEALTHY:
+                        skipped_nodes.append((node_id, health.name))
+                        self.logger.debug(
+                            f"[Node {node_id}] Skipping user sync - health status: {health.name}"
+                        )
+                        continue
+                    
+                    await node.update_user(user)
+                    synced_count += 1
+                    
+                except Exception as e:
+                    failed_nodes.append((node_id, str(e)))
+                    self.logger.error(
+                        f"[Node {node_id}] Failed to sync user: {e}"
+                    )
+        
+        # Log summary if there were any issues
+        if failed_nodes or skipped_nodes:
+            self.logger.warning(
+                f"User sync incomplete - Synced to {synced_count}/{total_nodes} nodes. "
+                f"Skipped: {len(skipped_nodes)} (unhealthy), Failed: {len(failed_nodes)} (errors)"
+            )
+            if failed_nodes:
+                self.logger.error(f"Failed nodes: {failed_nodes}")
+        elif synced_count > 0:
+            self.logger.debug(f"Successfully synced user to all {synced_count} nodes")
 
     async def update_user(self, user: UserResponse, inbounds: list[str] = None):
         proto_user = serialize_user_for_node(user.id, user.username, user.proxy_settings.dict(), inbounds)
